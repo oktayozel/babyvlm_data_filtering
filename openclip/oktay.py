@@ -97,12 +97,12 @@ def run_test_mode(model, preprocess):
             image_features /= image_features.norm(dim=-1, keepdim=True)
             text_features /= text_features.norm(dim=-1, keepdim=True)
 
-            logit_scale = model.logit_scale.exp()
-            probs = (logit_scale * image_features @ text_features.T).softmax(dim=-1).cpu().numpy()
+            # Raw cosine similarity (same as batch mode)
+            similarity_scores = (image_features @ text_features.T).cpu().numpy()
 
         print(f"\nImage: {test_img_path}")
         for i, caption in enumerate(captions):
-            print(f"Prob: {probs[0][i]:.4f} -> {caption}")
+            print(f"Score: {similarity_scores[0][i]:.4f} -> {caption}")
 
     except Exception as e:
         print(f"Test failed: {e}")
