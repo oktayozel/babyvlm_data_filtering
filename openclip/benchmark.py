@@ -36,8 +36,8 @@ MODELS = [
     {"name": "ViT-H-14-378-quickgelu", "pretrained": "dfn5b",             "note": "#1 avg perf (70.8%)"},
     {"name": "ViT-H-14-quickgelu",     "pretrained": "dfn5b",             "note": "#2 avg perf (69.6%)"},
     {"name": "EVA02-E-14-plus",        "pretrained": "laion2b_s9b_b144k", "note": "#3 avg perf (69.3%)"},
-    {"name": "ViT-SO400M-14-SigLIP-384", "pretrained": "webli",           "note": "#4 avg perf (69.2%)"},
-    {"name": "ViT-bigG-14-CLIPA-336",  "pretrained": "datacomp1b",        "note": "#5 avg perf (68.4%)"},
+    {"name": "EVA02-E-14",              "pretrained": "laion2b_s4b_b115k", "note": "#4 avg perf (66.9%)"},
+    {"name": "ViT-L-14-quickgelu",     "pretrained": "dfn2b",             "note": "#5 avg perf (66.9%)"},
 ]
 
 

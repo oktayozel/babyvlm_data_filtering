@@ -5,7 +5,8 @@ Converts human_labels.json into the benchmark format expected by benchmark.py.
 
 For each labeled image (excluding "reject" entries):
   - Uses the human caption as the true caption
-  - Randomly samples 2 other captions as distractors
+  - Selects 2 distractors that are semantically DIFFERENT from the true caption
+    (avoids captions with high word overlap to make the benchmark meaningful)
   - Randomizes the position of the true caption
 
 Usage:
@@ -15,9 +16,70 @@ Usage:
 import json
 import argparse
 import random
+import re
 
 
-def prepare_benchmark_data(input_path, output_path, num_distractors=2, seed=42):
+def extract_keywords(caption):
+    """Extract meaningful keywords from a caption (lowercase, no stopwords)."""
+    stopwords = {
+        'a', 'an', 'the', 'in', 'on', 'with', 'your', 'of', 'and', 'to',
+        'is', 'are', 'was', 'were', 'be', 'been', 'being', 'setting',
+    }
+    words = re.findall(r'[a-z]+', caption.lower())
+    return set(w for w in words if w not in stopwords and len(w) > 1)
+
+
+def word_overlap_ratio(caption1, caption2):
+    """
+    Compute the ratio of shared keywords between two captions.
+    Returns a value between 0 (no overlap) and 1 (identical keywords).
+    """
+    kw1 = extract_keywords(caption1)
+    kw2 = extract_keywords(caption2)
+    if not kw1 or not kw2:
+        return 0.0
+    intersection = kw1 & kw2
+    # Jaccard-like: overlap relative to the smaller set
+    return len(intersection) / min(len(kw1), len(kw2))
+
+
+def select_distractors(true_caption, all_captions, num_distractors=2, max_overlap=0.5):
+    """
+    Select distractor captions that are sufficiently different from the true caption.
+    
+    Prioritizes captions with low keyword overlap. Falls back to random if needed.
+    """
+    # Score all candidates by how DIFFERENT they are from the true caption
+    candidates = []
+    for cap in all_captions:
+        if cap == true_caption:
+            continue
+        overlap = word_overlap_ratio(true_caption, cap)
+        candidates.append((cap, overlap))
+    
+    # Sort by overlap (least similar first)
+    candidates.sort(key=lambda x: x[1])
+    
+    # Take from the low-overlap pool (overlap <= max_overlap)
+    low_overlap = [c for c, o in candidates if o <= max_overlap]
+    high_overlap = [c for c, o in candidates if o > max_overlap]
+    
+    distractors = []
+    
+    # First, try to fill from low-overlap candidates (random to add variety)
+    if len(low_overlap) >= num_distractors:
+        distractors = random.sample(low_overlap, num_distractors)
+    else:
+        # Use all low-overlap, then fill from high-overlap
+        distractors = low_overlap[:]
+        remaining = num_distractors - len(distractors)
+        if high_overlap:
+            distractors += random.sample(high_overlap, min(remaining, len(high_overlap)))
+    
+    return distractors
+
+
+def prepare_benchmark_data(input_path, output_path, num_distractors=2, max_overlap=0.5, seed=42):
     random.seed(seed)
     
     # Load human labels
@@ -26,7 +88,7 @@ def prepare_benchmark_data(input_path, output_path, num_distractors=2, seed=42):
     
     print(f"Loaded {len(data)} total entries from {input_path}")
     
-    # Filter out "reject" entries — keep only items with real captions
+    # Filter out "reject" entries
     valid_entries = []
     rejected = 0
     for filename, info in data.items():
@@ -47,31 +109,34 @@ def prepare_benchmark_data(input_path, output_path, num_distractors=2, seed=42):
         print(f"Error: Need at least {num_distractors + 1} valid entries, got {len(valid_entries)}")
         return
     
-    # Collect all unique captions for distractor sampling
+    # Collect all unique captions
     all_captions = list(set(entry["caption"] for entry in valid_entries))
     print(f"Unique captions: {len(all_captions)}")
     
     # Build benchmark data
     benchmark_data = []
+    overlap_stats = []
+    
     for entry in valid_entries:
         true_caption = entry["caption"]
         
-        # Sample distractors (different from the true caption)
-        distractor_pool = [c for c in all_captions if c != true_caption]
-        if len(distractor_pool) < num_distractors:
-            # Fallback: allow duplicate captions if pool is too small
-            distractors = random.choices(distractor_pool, k=num_distractors)
-        else:
-            distractors = random.sample(distractor_pool, num_distractors)
+        # Select semantically different distractors
+        distractors = select_distractors(true_caption, all_captions, num_distractors, max_overlap)
         
-        # Combine and shuffle — track where the true caption ends up
+        if len(distractors) < num_distractors:
+            print(f"Warning: Could only find {len(distractors)} distractors for: {true_caption}")
+            continue
+        
+        # Track overlap stats
+        for d in distractors:
+            overlap_stats.append(word_overlap_ratio(true_caption, d))
+        
+        # Combine and shuffle
         captions = [true_caption] + distractors
-        
-        # Shuffle and track true index
         indices = list(range(len(captions)))
         random.shuffle(indices)
         shuffled_captions = [captions[i] for i in indices]
-        true_caption_index = indices.index(0)  # 0 was the original position of true caption
+        true_caption_index = indices.index(0)
         
         benchmark_data.append({
             "image_path": entry["frame_path"],
@@ -85,13 +150,22 @@ def prepare_benchmark_data(input_path, output_path, num_distractors=2, seed=42):
     
     print(f"\nSaved {len(benchmark_data)} benchmark items to {output_path}")
     
+    # Print stats
+    if overlap_stats:
+        avg_overlap = sum(overlap_stats) / len(overlap_stats)
+        print(f"Avg keyword overlap between true & distractors: {avg_overlap:.2f}")
+        print(f"Max overlap allowed: {max_overlap}")
+    
     # Print a few samples
     print("\n--- Sample entries ---")
     for item in benchmark_data[:3]:
         print(f"\nImage: {item['image_path']}")
         for i, cap in enumerate(item['captions']):
-            marker = " ✓" if i == item['true_caption_index'] else ""
-            print(f"  [{i}] {cap}{marker}")
+            true_marker = " ✓" if i == item['true_caption_index'] else ""
+            true_cap = item['captions'][item['true_caption_index']]
+            overlap = word_overlap_ratio(cap, true_cap) if not true_marker else 0
+            overlap_str = f" (overlap: {overlap:.0%})" if not true_marker else ""
+            print(f"  [{i}] {cap}{true_marker}{overlap_str}")
 
 
 if __name__ == "__main__":
@@ -100,8 +174,10 @@ if __name__ == "__main__":
                         help="Path to human_labels.json")
     parser.add_argument("--output", type=str, default="benchmark_data.json",
                         help="Output path for benchmark JSON (default: benchmark_data.json)")
+    parser.add_argument("--max_overlap", type=float, default=0.5,
+                        help="Max keyword overlap ratio for distractors (0-1, default: 0.5)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility (default: 42)")
     args = parser.parse_args()
     
-    prepare_benchmark_data(args.input, args.output, seed=args.seed)
+    prepare_benchmark_data(args.input, args.output, max_overlap=args.max_overlap, seed=args.seed)
