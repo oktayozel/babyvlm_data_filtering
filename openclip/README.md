@@ -40,3 +40,13 @@ python benchmark.py --data benchmark_data.json --models 3 --output results.json
 ## Requirements
 
 `torch`, `open_clip_torch`, `Pillow`, `tqdm`, `numpy`
+
+
+
+
+# Generate benchmark data
+python prepare_benchmark_data.py \
+  --input /projectnb/ivc-ml/maxwh/code/labeling_effort/filter/human_labels.json \
+  --output benchmark_data.json
+# Then run the benchmark
+python benchmark.py --data benchmark_data.json
