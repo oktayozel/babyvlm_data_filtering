@@ -59,7 +59,7 @@ def load_benchmark_data(json_path):
     return data
 
 
-def benchmark_model(model_info, data):
+def benchmark_model(model_info, data, cache_dir=None):
     """Run benchmark for a single model using shared compute_similarity()."""
     model_name = model_info["name"]
     pretrained = model_info["pretrained"]
@@ -70,7 +70,12 @@ def benchmark_model(model_info, data):
     print(f"{'='*60}")
     
     start_time = time.time()
-    model, preprocess, tokenizer = load_model(model_name, pretrained)
+    try:
+        model, preprocess, tokenizer = load_model(model_name, pretrained, cache_dir=cache_dir)
+    except Exception as e:
+        print(f"  ERROR: Failed to load model: {e}")
+        print(f"  Skipping {model_name}...")
+        return None
     load_time = time.time() - start_time
     print(f"Model loaded in {load_time:.1f}s")
     
@@ -171,6 +176,8 @@ def main():
                         help="Number of top models to test (1-5, default: 5)")
     parser.add_argument("--output", type=str, default=None,
                         help="Optional: save detailed results to JSON")
+    parser.add_argument("--cache_dir", type=str, default=None,
+                        help="Directory to cache model weights (use if home dir has limited quota)")
     args = parser.parse_args()
     
     data = load_benchmark_data(args.data)
@@ -178,17 +185,25 @@ def main():
     
     print(f"\nBenchmarking {len(models_to_test)} models on {len(data)} images")
     print(f"Device: {DEVICE}")
+    if args.cache_dir:
+        print(f"Cache dir: {args.cache_dir}")
     
     results = []
     for model_info in models_to_test:
-        result = benchmark_model(model_info, data)
+        result = benchmark_model(model_info, data, cache_dir=args.cache_dir)
+        if result is None:
+            print(f"\n  -> {model_info['name']}: SKIPPED (failed to load)")
+            continue
         print(f"\n  -> {model_info['name']}: {result['accuracy']:.1f}% "
               f"({result['correct']}/{result['total']})")
         results.append(result)
     
-    print_summary(results)
+    if results:
+        print_summary(results)
+    else:
+        print("\nNo models were successfully loaded. Check disk space and model names.")
     
-    if args.output:
+    if args.output and results:
         with open(args.output, 'w') as f:
             json.dump(results, f, indent=2, default=str)
         print(f"\nDetailed results saved to {args.output}")

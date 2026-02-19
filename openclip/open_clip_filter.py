@@ -23,13 +23,18 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- Shared Utilities ---
 
-def load_model(model_name=DEFAULT_MODEL, pretrained=DEFAULT_PRETRAINED, device=None):
-    """Load an OpenCLIP model, returns (model, preprocess, tokenizer)."""
+def load_model(model_name=DEFAULT_MODEL, pretrained=DEFAULT_PRETRAINED, device=None, cache_dir=None):
+    """Load an OpenCLIP model, returns (model, preprocess, tokenizer).
+    
+    Args:
+        cache_dir: Optional directory to store downloaded model weights.
+                   Useful when home directory has limited disk quota.
+    """
     if device is None:
         device = DEVICE
     print(f"Loading {model_name} ({pretrained}) on {device}...")
     model, _, preprocess = open_clip.create_model_and_transforms(
-        model_name, pretrained=pretrained, device=device
+        model_name, pretrained=pretrained, device=device, cache_dir=cache_dir
     )
     model.eval()
     tokenizer = open_clip.get_tokenizer(model_name)
