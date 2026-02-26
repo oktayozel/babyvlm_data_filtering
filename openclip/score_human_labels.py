@@ -49,7 +49,8 @@ def main():
     errors = 0
 
     for filename, entry in tqdm(data.items(), desc="Scoring"):
-        caption = entry["human_caption"].strip()
+        # Auto-detect caption key
+        caption = entry.get("human_caption", entry.get("gemini_caption", "")).strip()
 
         # Skip rejected entries
         if caption.lower() == "reject":
