@@ -42,6 +42,7 @@ python benchmark.py --data benchmark_data.json --models 3 --output results.json
 `torch`, `open_clip_torch`, `Pillow`, `tqdm`, `numpy`
 
 
+module load miniconda
 
 
 # Generate benchmark data
@@ -49,4 +50,5 @@ python prepare_benchmark_data.py \
   --input /projectnb/ivc-ml/maxwh/code/labeling_effort/filter/human_labels.json \
   --output benchmark_data.json
 # Then run the benchmark
-python benchmark.py --data benchmark_data.json
+python benchmark.py --data benchmark_data.json --cache_dir /projectnb/ivc-ml/oktayozel/model_cache
+
