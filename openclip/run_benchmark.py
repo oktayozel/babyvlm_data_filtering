@@ -17,11 +17,11 @@ from tqdm import tqdm
 from open_clip_filter import load_model, compute_similarity, DEVICE
 
 MODELS = [
-    {"name": "ViT-gopt-16-SigLIP2-384",       "pretrained": "webli",            "params": "878M",  "note": "85.0% ImageNet"},
-    {"name": "ViT-H-14-378-quickgelu",         "pretrained": "dfn5b",            "params": "987M",  "note": "84.4% ImageNet"},
-    {"name": "ViT-SO400M-16-SigLIP2-384",      "pretrained": "webli",            "params": "878M",  "note": "84.1% ImageNet"},
-    {"name": "ViT-H-14-quickgelu",             "pretrained": "dfn5b",            "params": "986M",  "note": "83.4% ImageNet"},
-    {"name": "ViT-SO400M-14-SigLIP-384",       "pretrained": "webli",            "params": "878M",  "note": "83.1% ImageNet"},
+    {"name": "EVA02-E-14-plus",            "pretrained": "laion2b_s9b_b144k",  "params": "5.0B",  "note": "82.0% ImageNet — largest"},
+    {"name": "EVA02-E-14",                 "pretrained": "laion2b_s4b_b115k",  "params": "4.7B",  "note": "74.7% ImageNet"},
+    {"name": "ViT-bigG-14",                "pretrained": "laion2b_s39b_b160k", "params": "2.5B",  "note": "80.1% ImageNet"},
+    {"name": "ViT-H-14-378-quickgelu",     "pretrained": "dfn5b",              "params": "987M",  "note": "84.4% ImageNet — best acc"},
+    {"name": "ViT-H-14-quickgelu",         "pretrained": "dfn5b",              "params": "986M",  "note": "83.4% ImageNet"},
 ]
 
 
