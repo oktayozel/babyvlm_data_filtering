@@ -44,6 +44,8 @@ def run_model(model_info, data, cache_dir=None):
     
     correct = 0
     total = 0
+    errors = 0
+    first_error = None
     true_scores = []      # score of true caption
     best_wrong_scores = [] # highest score among wrong captions
     margins = []           # true_score - best_wrong_score
@@ -53,6 +55,9 @@ def run_model(model_info, data, cache_dir=None):
         try:
             scores = compute_similarity(model, preprocess, tokenizer, item["image_path"], item["captions"])
         except Exception as e:
+            errors += 1
+            if first_error is None:
+                first_error = f"{e} (image: {item['image_path']})"
             continue
         
         ti = item["true_caption_index"]
@@ -73,6 +78,18 @@ def run_model(model_info, data, cache_dir=None):
     
     eval_time = time.time() - t1
     
+    if errors > 0:
+        print(f"  ⚠ {errors}/{errors+total} images failed!")
+        print(f"  First error: {first_error}")
+    
+    if total == 0:
+        print(f"  ALL images failed — skipping this model.")
+        import torch
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return None
+    
     import torch
     del model
     if torch.cuda.is_available():
@@ -82,7 +99,7 @@ def run_model(model_info, data, cache_dir=None):
         "name": name,
         "pretrained": pretrained,
         "params": model_info["params"],
-        "accuracy": correct / total * 100 if total > 0 else 0,
+        "accuracy": correct / total * 100,
         "correct": correct,
         "total": total,
         "avg_true_score": float(np.mean(true_scores)),

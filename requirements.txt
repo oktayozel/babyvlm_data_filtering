@@ -3,3 +3,5 @@ torchvision
 open_clip_torch
 Pillow
 tqdm
+transformers
+sentencepiece
