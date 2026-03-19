@@ -2,13 +2,14 @@ import os
 import json
 import shutil
 import argparse
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import pipeline
+from transformers import AutoProcessor, AutoModel
 
-from data_loader import load_records
+from load_json_data import load_records
 
 
 DEFAULT_INPUT_JSON = "/projectnb/ivc-ml/maxwh/code/labeling_effort/filter/human_labels.json"
@@ -16,29 +17,61 @@ DEFAULT_MODEL_ID = "google/siglip2-so400m-patch14-384"
 DEFAULT_OUTPUT_DIR = "./siglip_scores"
 DEFAULT_OUTPUT_JSON = "data_with_siglip_scores.json"
 DEFAULT_EVENTS_JSONL = "siglip_events.jsonl"
+DEFAULT_BATCH_SIZE = 64
 
 
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
 
-def load_siglip2(model_id: str):
-    return pipeline(model=model_id, task="zero-shot-image-classification")
+def load_siglip2(model_id: str) -> Tuple[Any, Any, str]:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = AutoModel.from_pretrained(model_id).to(device)
+    model.eval()
+    return model, processor, device
 
 
-def compute_siglip2_score(pipe, image_path: str, caption: str) -> Optional[float]:
-    """
-    Returns SigLIP 2 sigmoid match score for a single (image, caption) pair.
-    Score near 1.0 = strong match, near 0.0 = no match.
-    Single-caption scoring is valid due to SigLIP's sigmoid (not softmax) loss.
-    """
+def _load_image(image_path: str) -> Image.Image:
     try:
-        image = Image.open(image_path).convert("RGB")
+        return Image.open(image_path).convert("RGB")
     except Exception:
-        image = Image.new("RGB", (384, 384), (0, 0, 0))
+        return Image.new("RGB", (384, 384), (0, 0, 0))
 
-    outputs = pipe(image, candidate_labels=[caption])
-    return outputs[0]["score"]
+
+def compute_siglip2_scores_batch(
+    model,
+    processor,
+    device: str,
+    image_paths: List[str],
+    captions: List[str],
+) -> List[float]:
+    """
+    Compute SigLIP 2 sigmoid match scores for a batch of (image, caption) pairs.
+
+    Each pair (image_paths[i], captions[i]) is scored independently using the
+    diagonal of the N×N image-text similarity matrix, which is valid because
+    SigLIP uses a per-pair sigmoid loss (not softmax).
+
+    Returns a list of float scores in [0, 1], one per pair.
+    """
+    images = [_load_image(p) for p in image_paths]
+
+    inputs = processor(
+        text=captions,
+        images=images,
+        return_tensors="pt",
+        padding="max_length",
+        truncation=True,
+    ).to(device)
+
+    with torch.no_grad(), torch.autocast(device_type=device, enabled=(device == "cuda")):
+        outputs = model(**inputs)
+        # logits_per_image: [N, N]; diagonal gives paired (img_i, text_i) logits
+        scores = torch.sigmoid(outputs.logits_per_image.diagonal()).cpu().tolist()
+
+    return scores
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +127,7 @@ def load_done_keys(events_jsonl: str) -> set:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Score image-caption pairs with SigLIP 2 and write scores to a copy of the input JSON."
+        description="Score image-caption pairs with SigLIP 2 in batches and write scores to a copy of the input JSON."
     )
     parser.add_argument("--input_json",     type=str, default=DEFAULT_INPUT_JSON)
     parser.add_argument("--model_id",       type=str, default=DEFAULT_MODEL_ID)
@@ -106,8 +139,10 @@ def main():
     parser.add_argument("--caption_field",  type=str, default=None,
                         help="Which caption field to use: 'human_caption' or 'gemini_caption'. "
                              "If not set, tries both in order.")
-    parser.add_argument("--snapshot_every", type=int, default=25,
-                        help="Write a full JSON snapshot every N processed items.")
+    parser.add_argument("--batch_size",     type=int, default=DEFAULT_BATCH_SIZE,
+                        help="Number of (image, caption) pairs to score per forward pass.")
+    parser.add_argument("--snapshot_every", type=int, default=100,
+                        help="Write a full JSON snapshot every N batches (0 = disable).")
     parser.add_argument("--skip_token",     type=str, default="reject",
                         help="Caption value treated as rejected. Set to '' to disable.")
     args = parser.parse_args()
@@ -122,7 +157,7 @@ def main():
     # 2. Load the live output JSON (may already have partial scores from a previous run)
     output_data = load_json(output_json_path)
 
-    # 3. Load records via data_loader
+    # 3. Load records via data loader
     records = load_records(
         args.input_json,
         caption_field=args.caption_field,
@@ -138,47 +173,68 @@ def main():
 
     # 5. Load model
     print(f"Loading SigLIP 2 model: {args.model_id}")
-    pipe = load_siglip2(args.model_id)
+    model, processor, device = load_siglip2(args.model_id)
 
-    # 6. Score loop
-    processed = 0
+    # 6. Partition pending records into null (no score) vs scoreable
+    null_records: List[Tuple[Any, str]] = []   # (record, reason)
+    score_records: List[Any] = []
+
+    for record in records:
+        if record.key in done_keys:
+            continue
+        if record.caption is None:
+            null_records.append((record, "no_valid_caption"))
+        elif not record.image_path or not os.path.exists(record.image_path):
+            null_records.append((record, "missing_image"))
+        else:
+            score_records.append(record)
+
+    print(f"  {len(null_records)} records skipped (no caption / missing image)")
+    print(f"  {len(score_records)} records to score in batches of {args.batch_size}")
+
+    # 7. Score
     os.makedirs(args.output_dir, exist_ok=True)
+    processed = 0
+    batches_done = 0
 
     with open(events_jsonl_path, "a") as ef:
-        for record in tqdm(records, desc="Scoring SigLIP 2"):
-            if record.key in done_keys:
-                continue
 
-            event: Dict[str, Any] = {"key": record.key}
-
-            # Rejected / empty caption → siglip_score: null
-            if record.caption is None:
-                output_data[record.key]["siglip_score"] = None
-                event.update({"siglip_score": None, "reason": "no_valid_caption"})
-
-            # Missing image → siglip_score: null
-            elif not record.image_path or not os.path.exists(record.image_path):
-                output_data[record.key]["siglip_score"] = None
-                event.update({"siglip_score": None, "reason": "missing_image"})
-
-            # Score
-            else:
-                try:
-                    score = compute_siglip2_score(pipe, record.image_path, record.caption)
-                    output_data[record.key]["siglip_score"] = score
-                    event["siglip_score"] = score
-                except Exception as e:
-                    output_data[record.key]["siglip_score"] = None
-                    event.update({"siglip_score": None, "error": str(e)})
-
-            ef.write(json.dumps(event) + "\n")
-            ef.flush()
+        # Write null records first
+        for record, reason in null_records:
+            output_data[record.key]["siglip_score"] = None
+            ef.write(json.dumps({"key": record.key, "siglip_score": None, "reason": reason}) + "\n")
             processed += 1
+        ef.flush()
 
-            if args.snapshot_every > 0 and processed % args.snapshot_every == 0:
+        # Process scoreable records in batches
+        n_batches = (len(score_records) + args.batch_size - 1) // args.batch_size
+        for batch_idx in tqdm(range(n_batches), desc="Scoring SigLIP 2 (batches)"):
+            start = batch_idx * args.batch_size
+            batch = score_records[start: start + args.batch_size]
+
+            image_paths = [r.image_path for r in batch]
+            captions    = [r.caption    for r in batch]
+
+            try:
+                scores = compute_siglip2_scores_batch(model, processor, device, image_paths, captions)
+                for record, score in zip(batch, scores):
+                    output_data[record.key]["siglip_score"] = score
+                    ef.write(json.dumps({"key": record.key, "siglip_score": score}) + "\n")
+            except Exception as e:
+                # Fall back to null for the whole batch; log the error
+                err_str = str(e)
+                for record in batch:
+                    output_data[record.key]["siglip_score"] = None
+                    ef.write(json.dumps({"key": record.key, "siglip_score": None, "error": err_str}) + "\n")
+
+            ef.flush()
+            processed += len(batch)
+            batches_done += 1
+
+            if args.snapshot_every > 0 and batches_done % args.snapshot_every == 0:
                 write_json(output_json_path, output_data)
 
-    # 7. Final write
+    # 8. Final write
     write_json(output_json_path, output_data)
 
     print("\nDone.")
